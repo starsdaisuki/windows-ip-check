@@ -1,242 +1,182 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Native Windows IP inspection. Requires Windows 10 1803+ curl.exe, no WSL.
-.EXAMPLE
-.\ipquality.ps1 -CheckExitOnly -Proxy http://127.0.0.1:7897
-.EXAMPLE
-.\ipquality.ps1 -Proxy http://127.0.0.1:7897 -ExpectedIP $verifiedExit
+Run the ORIGINAL xykt/IPQuality report on native Windows, including all modules.
 .NOTES
-IPv4 only. No administrator rights, installs, uploads, or account credentials.
-Data providers necessarily receive the queried IP. Demo APIs may rate-limit.
-Without -Proxy, curl uses OS routing (including TUN), NOT Windows system proxy.
-curl config/environment proxy settings are disabled for deterministic routing.
-Exit codes: 0 completed, 2 egress invalid/changed, 3 all providers unavailable.
+First run prepares official Cygwin tools in LOCALAPPDATA. No WSL or Docker.
+The upstream Bash script is downloaded unchanged and SHA256-verified.
 #>
 [CmdletBinding()]
 param(
-    [string]$Proxy = '',
-    [string]$ExpectedIP = '',
-    [switch]$CheckExitOnly,
-    [switch]$Json,
-    [ValidateRange(2, 30)][int]$TimeoutSec = 10,
-    [switch]$LibraryOnly
+    [switch]$IPv6,
+    [switch]$English,
+    [switch]$LibraryOnly,
+    [string]$CacheRoot = ''
 )
 
-function Get-SUField($Object, [string]$Path) {
-    $value = $Object
-    foreach ($name in $Path.Split('.')) {
-        if ($null -eq $value) { return $null }
-        $prop = $value.PSObject.Properties[$name]
-        if ($null -eq $prop) { return $null }
-        $value = $prop.Value
+$script:UpstreamRevision = '3c0eb8856c67ad351020d1edd1bfd4e2515d32fe'
+$script:UpstreamSha256 = 'ffb17dae790341c13023a94c5141775974dd73a3653ca5fba5c4648fc5588402'
+
+function Get-IPQualityArguments([bool]$UseIPv6 = $false, [bool]$UseEnglish = $false) {
+    # -n only skips Linux dependency installation; it is NOT lite mode.
+    # -p keeps the complete report but disables uploading an online report.
+    $values = @('-4', '-n', '-p')
+    if ($UseIPv6) { $values[0] = '-6' }
+    if ($UseEnglish) { $values += '-E' }
+    return $values
+}
+
+function Get-IPQualityFile([string]$Url, [string]$Destination) {
+    & $script:WindowsCurl -q --fail --silent --show-error --location --retry 2 `
+        --connect-timeout 10 --max-time 120 --proto '=https' --proto-redir '=https' `
+        --output $Destination --url $Url
+    if ($LASTEXITCODE -ne 0) { throw 'Download failed. Keep Clash TUN enabled and retry.' }
+}
+
+function Test-IPQualityRuntime([string]$Runtime) {
+    foreach ($name in @('bash','curl','jq','bc','dig','xargs','cygpath','netcat')) {
+        # netcat is provided as nc.exe by the OpenBSD netcat package.
+        if ($name -eq 'netcat') { $name = 'nc' }
+        if (-not (Test-Path -LiteralPath (Join-Path $Runtime "bin/$name.exe"))) { return $false }
     }
-    return $value
+    return $true
 }
 
-function Test-SUIPv4([string]$Value) {
-    if ($Value -notmatch '^(\d{1,3}\.){3}\d{1,3}$') { return $false }
-    $address = $null
-    if (-not [Net.IPAddress]::TryParse($Value, [ref]$address)) { return $false }
-    # Reject shorthand, octal, and private/local results from proxy interception.
-    if ($address.ToString() -cne $Value) { return $false }
-    $b = $address.GetAddressBytes()
-    return -not ($b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or
-        $b[0] -ge 224 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or
-        ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
-        ($b[0] -eq 192 -and $b[1] -eq 168) -or
-        ($b[0] -eq 198 -and $b[1] -in @(18,19)) -or
-        ($b[0] -eq 192 -and $b[1] -eq 0 -and $b[2] -eq 2) -or
-        ($b[0] -eq 198 -and $b[1] -eq 51 -and $b[2] -eq 100) -or
-        ($b[0] -eq 203 -and $b[1] -eq 0 -and $b[2] -eq 113) -or
-        ($b[0] -eq 192 -and $b[1] -eq 88 -and $b[2] -eq 99) -or
-        ($b[0] -eq 192 -and $b[1] -eq 0 -and $b[2] -eq 0 -and $b[3] -notin @(9,10)) -or
-        ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127))
+function New-IPQualityLaunchScript([string[]]$Flags, [string]$ExpectedIP, [string]$ReportName) {
+    if ($ExpectedIP -notmatch '^[0-9a-fA-F:.]+$') { throw 'Invalid exit IP' }
+    if ($ReportName -notmatch '^[a-zA-Z0-9-]+\.json$') { throw 'Invalid report name' }
+    foreach ($flag in $Flags) {
+        if ($flag -notin @('-4','-6','-n','-p','-E')) { throw 'Unexpected upstream flag' }
+    }
+    $template = @'
+#!/bin/bash
+set -e
+export PATH=/usr/bin:/bin:$PATH
+export LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm
+# TUN uses OS routing. Do not accidentally inherit an unrelated shell proxy.
+unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy NO_PROXY
+root="$(cd -- "$(dirname -- "$0")" && pwd)"
+export PATH="$root/compat:$PATH"
+for tool in bash curl jq bc nc dig xargs gzip timeout ss; do
+    command -v "$tool" >/dev/null || { echo "Missing runtime tool: $tool"; exit 10; }
+done
+actual=$(curl __FAMILY__ -fsS --max-time 15 https://api64.ipify.org)
+if [ "$actual" != '__EXPECTED__' ]; then
+    echo "Windows/runtime exit mismatch: expected __EXPECTED__, got $actual"
+    exit 20
+fi
+printf '\nWindows and native Bash exit agree: %s\n' "$actual"
+printf 'Running original xykt/IPQuality - all report modules retained.\n\n'
+set +e
+bash "$root/upstream-__REVISION__.sh" __FLAGS__ -o "$root/reports/__REPORT__" | tee "$root/reports/__REPORT__.ansi"
+exit "${PIPESTATUS[0]}"
+'@
+    return $template.Replace('__FAMILY__', $Flags[0]).Replace('__EXPECTED__', $ExpectedIP).
+        Replace('__REVISION__', $script:UpstreamRevision).Replace('__FLAGS__', ($Flags -join ' ')).
+        Replace('__REPORT__', $ReportName)
 }
 
-function Invoke-SUHttp([string]$Url) {
-    $ErrorActionPreference = 'Continue'
-    # -q MUST be first: ignore .curlrc. Arguments are never shell-evaluated.
-    $curlArgs = @('-q', '-4', '--silent', '--show-error',
-        '--proto', '=https',
-        '--connect-timeout', '5', '--max-time', "$TimeoutSec",
-        '--max-filesize', '1048576', '--user-agent', 'StarUnlock-IP/0.1',
-        '--write-out', "`nSTARUNLOCK_HTTP:%{http_code}")
-    # A nonmatching reserved domain overrides NO_PROXY without an empty argv
-    # element (Windows PowerShell 5.1 drops empty native arguments).
-    if ($Proxy) { $curlArgs += @('--proxy', $Proxy, '--noproxy', 'starunlock.invalid') }
-    # No redirects: the exact host bypasses environment proxies without a '*'
-    # argument that PowerShell on Unix may expand into local filenames.
-    else { $curlArgs += @('--noproxy', ([Uri]$Url).DnsSafeHost) }
-    $curlArgs += @('--url', $Url)
-    for ($attempt = 0; $attempt -lt 2; $attempt++) {
-        # PS5.1 wraps native stderr as ErrorRecord; do not mistake it for data.
-        $output = @(& $script:SUCurl @curlArgs 2>&1)
-        $code = $LASTEXITCODE
-        $body = ($output | ForEach-Object { $_.ToString() }) -join "`n"
-        if ($code -eq 0 -and $body -match '(?s)^(.*)\nSTARUNLOCK_HTTP:(\d{3})$') {
-            $http = [int]$Matches[2]
-            if ($http -ge 200 -and $http -lt 300) { return $Matches[1] }
-            if ($http -lt 500) { throw "HTTP $http (no IP verdict)" }
+function Start-IPQualityWindows {
+    if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
+        throw 'This launcher requires 64-bit Windows 10/11 and PowerShell 5.1 or newer.'
+    }
+    $script:WindowsCurl = (Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    if (-not $CacheRoot) { $CacheRoot = Join-Path $env:LOCALAPPDATA 'WindowsIPCheck' }
+    $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
+    New-Item -ItemType Directory -Path $CacheRoot -Force | Out-Null
+    $lock = [IO.File]::Open((Join-Path $CacheRoot 'run.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    try {
+        $runtime = Join-Path $CacheRoot 'cygwin'
+        if (-not (Test-IPQualityRuntime $runtime)) {
+            Write-Output 'First run: downloading the official native Windows Bash tools (about 70 MB; usually a few minutes).'
+            Write-Output 'This is automatic. No WSL, Docker, administrator prompt, system PATH or shortcuts are needed.'
+            $setup = Join-Path $CacheRoot ('setup-' + [guid]::NewGuid().ToString('N') + '.exe')
+            $checksums = Join-Path $CacheRoot ('sha512-' + [guid]::NewGuid().ToString('N') + '.txt')
+            Get-IPQualityFile 'https://cygwin.com/setup-x86_64.exe' $setup
+            Get-IPQualityFile 'https://cygwin.com/sha512.sum' $checksums
+            $manifest = Get-Content -LiteralPath $checksums -Raw
+            if ($manifest -notmatch '(?m)^([a-fA-F0-9]{128})\s+\*?setup-x86_64\.exe\s*$') { throw 'Official setup checksum missing' }
+            $expected = $Matches[1]
+            if ((Get-FileHash -LiteralPath $setup -Algorithm SHA512).Hash -ine $expected) { throw 'Cygwin setup checksum mismatch' }
+            $setupArgs = @('--quiet-mode', '--no-admin', '--no-shortcuts', '--no-write-registry',
+                '--no-replaceonreboot', '--only-site', '--site', 'https://mirrors.kernel.org/sourceware/cygwin/',
+                '--root', $runtime, '--local-package-dir', (Join-Path $CacheRoot 'packages'),
+                '--packages', 'bash,coreutils,grep,sed,gawk,findutils,gzip,curl,jq,bc,netcat,bind-utils,ca-certificates')
+            # Pipeline waits for the GUI-subsystem installer even in PowerShell.
+            & $setup @setupArgs | Out-Null
+            $setupExit = $LASTEXITCODE
+            if ($setupExit -ne 0 -or -not (Test-IPQualityRuntime $runtime)) {
+                throw "Native runtime setup failed (exit=$setupExit). Retry to resume the cached download."
+            }
         }
-    }
-    # Do not echo curl stderr: a proxy URL could contain credentials.
-    throw "Request failed (curl=$code); no IP verdict"
-}
-
-function Get-SUEgress {
-    $observations = @()
-    foreach ($endpoint in @(
-        @('ipify', 'https://api.ipify.org'),
-        @('Cloudflare', 'https://www.cloudflare.com/cdn-cgi/trace')
-    )) {
+        $upstream = Join-Path $CacheRoot ("upstream-$script:UpstreamRevision.sh")
+        if (-not (Test-Path -LiteralPath $upstream)) {
+            $download = $upstream + '.' + [guid]::NewGuid().ToString('N') + '.download'
+            Get-IPQualityFile "https://raw.githubusercontent.com/xykt/IPQuality/$script:UpstreamRevision/ip.sh" $download
+            if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash -ine $script:UpstreamSha256) {
+                throw 'Upstream script checksum mismatch'
+            }
+            [IO.File]::Move($download, $upstream)
+        }
+        if ((Get-FileHash -LiteralPath $upstream -Algorithm SHA256).Hash -ine $script:UpstreamSha256) {
+            throw 'Cached upstream script has changed. Refusing to execute it.'
+        }
+        $compat = Join-Path $CacheRoot 'compat'
+        $reports = Join-Path $CacheRoot 'reports'
+        New-Item -ItemType Directory -Force -Path $compat,$reports | Out-Null
+        # Upstream ss -tano is used only to look for TCP port 25. Query Windows'
+        # real TCP table instead of pretending that Linux ss exists here.
+        $netstat = (& (Join-Path $runtime 'bin/cygpath.exe') '-u' (Join-Path $env:SystemRoot 'System32/netstat.exe') | Out-String).Trim()
+        if (-not $netstat -or $netstat -match "['`r`n]") { throw 'Cannot resolve native TCP tool path' }
+        $ss = "#!/bin/bash`nexec '$netstat' -ano -p tcp`n"
+        [IO.File]::WriteAllText((Join-Path $compat 'ss'), $ss, (New-Object Text.UTF8Encoding($false)))
+        $bash = Join-Path $runtime 'bin/bash.exe'
+        & (Join-Path $runtime 'bin/chmod.exe') '+x' (Join-Path $compat 'ss')
+        if ($LASTEXITCODE -ne 0) { throw 'Could not prepare native TCP adapter' }
+        $family = '-4'
+        if ($IPv6) { $family = '-6' }
+        $exitIP = (& $script:WindowsCurl -q $family -fsS --noproxy api64.ipify.org --max-time 15 https://api64.ipify.org | Out-String).Trim()
+        $address = $null
+        if ($LASTEXITCODE -ne 0 -or -not [Net.IPAddress]::TryParse($exitIP, [ref]$address)) { throw 'Windows exit-IP query failed' }
+        $flags = @(Get-IPQualityArguments ([bool]$IPv6) ([bool]$English))
+        $runId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
+        $reportName = "ipquality-$runId.json"
+        $launcher = Join-Path $CacheRoot ("run-$runId.sh")
+        $content = New-IPQualityLaunchScript $flags $exitIP $reportName
+        [IO.File]::WriteAllText($launcher, $content.Replace("`r`n","`n"), (New-Object Text.UTF8Encoding($false)))
+        Write-Output "Windows exit: $exitIP"
+        Write-Output ('Local full JSON report: ' + (Join-Path $reports $reportName))
+        # Native stderr contains upstream progress/diagnostics, not PS exceptions.
+        $nativePreference = $ErrorActionPreference
         try {
-            $body = Invoke-SUHttp $endpoint[1]
-            $ip = $body.Trim()
-            if ($endpoint[0] -eq 'Cloudflare') {
-                if ($body -notmatch '(?m)^ip=([^\r\n]+)') { throw 'Missing trace IP' }
-                $ip = $Matches[1].Trim()
-            }
-            if (-not (Test-SUIPv4 $ip)) { throw 'Invalid/non-public IPv4 response' }
-            $observations += [pscustomobject]@{ source=$endpoint[0]; ip=$ip; error=$null }
-        } catch {
-            $observations += [pscustomobject]@{ source=$endpoint[0]; ip=$null; error=$_.Exception.Message }
+            $ErrorActionPreference = 'Continue'
+            & $bash --noprofile --norc $launcher
+            $code = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $nativePreference }
+        $reportPath = Join-Path $reports $reportName
+        if (-not (Test-Path -LiteralPath $reportPath)) { throw "Original IPQuality produced no report (exit=$code)" }
+        $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        foreach ($section in @('Head','Info','Type','Score','Factor','Media','Mail')) {
+            if ($null -eq $report.PSObject.Properties[$section]) { throw "Incomplete upstream report: $section missing" }
         }
-    }
-    $ips = @($observations | Where-Object { $_.ip } | Select-Object -ExpandProperty ip -Unique)
-    $valid = @($observations | Where-Object { $_.ip }).Count -eq 2 -and $ips.Count -eq 1
-    $ip = $null
-    if ($valid) { $ip = $ips[0] }
-    return [pscustomobject]@{ verified=$valid; ip=$ip; observations=$observations }
-}
-
-function Convert-SUProvider([string]$Name, $Data, [string]$TargetIP) {
-    $risk = [ordered]@{}
-    $type = $null
-    $companyType = $null
-    $asn = $null
-    switch ($Name) {
-        'IPinfo' {
-            $d = Get-SUField $Data 'data'
-            $ip = Get-SUField $d 'ip'
-            $country = Get-SUField $d 'country'
-            $asn = Get-SUField $d 'org'
-            $type = Get-SUField $d 'asn.type'
-            $companyType = Get-SUField $d 'company.type'
-            foreach ($key in @('vpn','proxy','tor','relay','hosting')) {
-                $v = Get-SUField $d "privacy.$key"
-                if ($v -is [bool]) { $risk[$key] = $v }
-            }
+        $scoreCount = @($report.Score.PSObject.Properties | Where-Object { $null -ne $_.Value -and $_.Value -ne 'null' -and $_.Value -ne '' }).Count
+        $ansiPath = $reportPath + '.ansi'
+        if ((Test-Path -LiteralPath $ansiPath) -and (Get-Content -LiteralPath $ansiPath -Raw -Encoding UTF8).Contains('(Lite)')) {
+            Write-Output 'UPSTREAM LIMITED (Lite): its lookup service failed. Full multi-source reputation was NOT obtained.'
         }
-        'ipapi.is' {
-            $ip = Get-SUField $Data 'ip'
-            $country = Get-SUField $Data 'location.country_code'
-            if (-not $country) { $country = Get-SUField $Data 'country' }
-            $asn = Get-SUField $Data 'asn.asn'
-            if (-not $asn) { $asn = Get-SUField $Data 'asn' }
-            $type = Get-SUField $Data 'asn.type'
-            $companyType = Get-SUField $Data 'company.type'
-            foreach ($key in @('is_proxy','is_vpn','is_tor','is_datacenter','is_abuser')) {
-                $v = Get-SUField $Data $key
-                if ($v -is [bool]) { $risk[$key] = $v }
-            }
-            $score = Get-SUField $Data 'company.abuser_score'
-            if ($null -ne $score) { $risk['company_abuser_score_raw'] = $score }
-        }
-        'DB-IP' {
-            $ip = Get-SUField $Data 'ipAddress'
-            $country = Get-SUField $Data 'countryCode'
-        }
-        default { throw 'Unknown provider' }
-    }
-    if ($ip -cne $TargetIP) { throw 'Response IP missing or differs from target' }
-    if (-not ($country -is [string]) -or -not $country.Trim()) { throw 'Missing country field' }
-    return [pscustomobject]@{
-        source=$Name; status='INFO'; ip=$ip; country=$country; asn=$asn
-        asn_type=$type; company_type=$companyType
-        risk_fields=[pscustomobject]$risk; risk_available=($risk.Count -gt 0); error=$null
-    }
-}
-
-function Invoke-SUInspection {
-    $before = Get-SUEgress
-    $report = [pscustomobject]@{
-        version='0.1.0'; timestamp_utc=[DateTime]::UtcNow.ToString('o'); ipv=4
-        routing=$(if ($Proxy) { 'explicit-proxy' } else { 'os-route-no-system-proxy' })
-        status='EGRESS-UNVERIFIED'; exit_code=2; egress_before=$before
-        expected_ip=$ExpectedIP; providers=@(); egress_after=$null
-        notes=@('No overall clean-IP score. Missing fields are unknown, never false.',
-            'Two exit checks cannot prove every destination uses the same route.',
-            'Database lookups explicitly query the verified target IP.',
-            'No streaming, DNSBL, SMTP, or IPv6 coverage in this first version.')
-    }
-    if (-not $before.verified) { return $report }
-    if ($ExpectedIP -and $before.ip -cne $ExpectedIP) {
-        $report.status = 'EXPECTED-IP-MISMATCH'
-        return $report
-    }
-    if ($CheckExitOnly) {
-        $report.status='EXIT-VERIFIED'; $report.exit_code=0
-        return $report
-    }
-    $target = $before.ip
-    foreach ($provider in @(
-        @('IPinfo', "https://ipinfo.io/widget/demo/$target"),
-        @('ipapi.is', "https://api.ipapi.is/?q=$target"),
-        @('DB-IP', "https://api.db-ip.com/v2/free/$target")
-    )) {
-        try {
-            $data = (Invoke-SUHttp $provider[1]) | ConvertFrom-Json -ErrorAction Stop
-            $report.providers += Convert-SUProvider $provider[0] $data $target
-        } catch {
-            $report.providers += [pscustomobject]@{
-                source=$provider[0]; status='PROBE-FAIL'; ip=$target; country=$null
-                asn=$null; asn_type=$null; company_type=$null; risk_fields=$null
-                risk_available=$false; error=$_.Exception.Message
-            }
-        }
-    }
-    $report.egress_after = Get-SUEgress
-    if (-not $report.egress_after.verified -or $report.egress_after.ip -cne $target) {
-        $report.status='EGRESS-CHANGED-OR-UNVERIFIED'
-        return $report
-    }
-    $good = @($report.providers | Where-Object { $_.status -eq 'INFO' }).Count
-    if ($good -eq 0) { $report.status='ALL-PROBES-FAILED'; $report.exit_code=3 }
-    elseif ($good -lt $report.providers.Count) { $report.status='PARTIAL'; $report.exit_code=0 }
-    else { $report.status='COMPLETE'; $report.exit_code=0 }
-    return $report
+        Write-Output "Report sections present: 7/7; available score sources: $scoreCount/6. Empty sources are NOT clean scores."
+        Write-Output ('Full report saved: ' + $reportPath)
+    } finally { $lock.Dispose() }
 }
 
 if ($LibraryOnly) { return }
-if ($ExpectedIP -and -not (Test-SUIPv4 $ExpectedIP)) { throw 'ExpectedIP must be a public IPv4 address' }
-if ($Proxy) {
-    $uri = $null
-    if (-not [Uri]::TryCreate($Proxy, [UriKind]::Absolute, [ref]$uri) -or
-        $uri.Scheme -notin @('http','https','socks5','socks5h') -or -not $uri.Host) {
-        throw 'Proxy must be an http(s):// or socks5(h):// URL'
-    }
+$previousEncoding = [Console]::OutputEncoding
+$previousPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Stop'
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    Start-IPQualityWindows
+} finally {
+    [Console]::OutputEncoding = $previousEncoding
+    $ErrorActionPreference = $previousPreference
 }
-$curlName = 'curl'
-if ($env:OS -eq 'Windows_NT') { $curlName = 'curl.exe' }
-$script:SUCurl = (Get-Command $curlName -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-$result = Invoke-SUInspection
-if ($Json) { $result | ConvertTo-Json -Depth 12 }
-else {
-    Write-Output "StarUnlock IP (IPv4) | $($result.status)"
-    Write-Output "Route: $($result.routing) | Verified IP: $($result.egress_before.ip)"
-    $result.egress_before.observations | Format-Table source,ip,error -AutoSize | Out-String -Width 140 | Write-Output
-    foreach ($row in $result.providers) {
-        Write-Output "[$($row.status)] $($row.source): country=$($row.country) ASN=$($row.asn)"
-        Write-Output "  ASN type=$($row.asn_type); company type=$($row.company_type)"
-        if ($row.risk_available) { Write-Output ('  Risk fields: ' + ($row.risk_fields | ConvertTo-Json -Compress)) }
-        else { Write-Output '  Risk fields: UNKNOWN / NOT PROVIDED' }
-        if ($row.error) { Write-Output "  $($row.error)" }
-    }
-    if ($result.exit_code -eq 2) { Write-Output 'Exit validation failed. Do not use this run as an IP-quality verdict.' }
-    Write-Output 'INFO = provider claims; PROBE-FAIL = no verdict. No overall clean/dirty score.'
-    Write-Output 'Scope: three providers; no streaming, DNSBL, SMTP, or IPv6. No online report uploaded.'
-}
-# Piped download (irm ... | iex) must not exit the user's interactive shell.
-# File callers still receive the documented native process exit code.
-if ($MyInvocation.MyCommand.CommandType -eq 'ExternalScript') { exit $result.exit_code }
