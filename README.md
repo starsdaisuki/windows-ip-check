@@ -7,7 +7,7 @@
 开启 Clash **TUN 模式**，打开 **PowerShell**，粘贴：
 
 ```powershell
-irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/main/ipquality.ps1?v=2 | iex
+irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/v2/ipquality.ps1 | iex
 ```
 
 适用于 64 位 Windows 10/11、Windows PowerShell 5.1 或 PowerShell 7。无需预装 Git、Bash、jq、WSL 或 Docker。
