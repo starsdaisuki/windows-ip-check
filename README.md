@@ -7,7 +7,7 @@
 保持 Clash **TUN 模式**开启，在 **PowerShell** 中粘贴：
 
 ```powershell
-irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/main/ipquality.ps1 | iex
+irm -Headers @{Accept='application/vnd.github.raw+json'} https://api.github.com/repos/starsdaisuki/windows-ip-check/contents/ipquality.ps1 | iex
 ```
 
 支持 Windows PowerShell 5.1 和 PowerShell 7，需要系统自带的 `curl.exe`（Windows 10 1803+）。
@@ -22,7 +22,7 @@ irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/main/ipquali
 可显式指定 Clash 的实际混合端口；下面 `7897` 是示例：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/main/ipquality.ps1))) -Proxy http://127.0.0.1:7897
+& ([scriptblock]::Create((irm -Headers @{Accept='application/vnd.github.raw+json'} https://api.github.com/repos/starsdaisuki/windows-ip-check/contents/ipquality.ps1))) -Proxy http://127.0.0.1:7897
 ```
 
 指定的代理连接失败时会停止，不自动回落直连。
