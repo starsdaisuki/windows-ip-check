@@ -1,0 +1,4 @@
+*.log
+*.zip
+.local/
+.privacy/private*
