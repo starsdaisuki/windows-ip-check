@@ -1,6 +1,7 @@
 version = 1
 # Public attribution addresses; no personal email.
-approved_emails = ["148686572+starsdaisuki@users.noreply.github.com", "noreply@openai.com"]
+approved_emails = ["148686572+starsdaisuki@users.noreply.github.com", "noreply@openai.com", "noreply@anthropic.com"]
 # Loopback/fake-IP validation and public DNS addresses in synthetic test responses.
-approved_ips = ["127.0.0.1", "10.0.0.1", "198.18.0.1", "1.1.1.1", "8.8.8.8", "9.9.9.9"]
+# 0.0.0.0 is the placeholder the nslookup shim prints when a lookup returns nothing.
+approved_ips = ["127.0.0.1", "10.0.0.1", "198.18.0.1", "1.1.1.1", "8.8.8.8", "9.9.9.9", "0.0.0.0"]
 approved_uuids = []
