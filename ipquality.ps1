@@ -4,7 +4,8 @@
 Run the ORIGINAL xykt/IPQuality report on native Windows, including all modules.
 .NOTES
 First run prepares official Cygwin tools in LOCALAPPDATA. No WSL or Docker.
-The upstream Bash script is downloaded unchanged and SHA256-verified.
+The upstream Bash script is downloaded unchanged and SHA256-verified; one documented
+regex-portability patch is applied to a copy at launch (see New-IPQualityLaunchScript).
 #>
 [CmdletBinding()]
 param(
@@ -68,7 +69,13 @@ fi
 printf '\nWindows and native Bash exit agree: %s\n' "$actual"
 printf 'Running original xykt/IPQuality - all report modules retained.\n\n'
 set +e
-bash "$root/upstream-__REVISION__.sh" __FLAGS__ -o "$root/reports/__REPORT__" | tee "$root/reports/__REPORT__.ansi"
+# One documented portability patch, applied to a COPY after the checksum gate (the cached upstream stays pristine):
+# upstream's IPv4 regex uses GNU word boundaries \< \>, which glibc accepts but Cygwin/BSD regcomp rejects,
+# so check_ip_valide never matches, calc_ip_net returns "" on both sides, and every streaming row is
+# mislabeled as "DNS" unlock instead of "Native". The pattern is ^...$-anchored, so dropping the two
+# boundary tokens is semantically identical. Verified 2026-09-05 against a Linux run of the same exit IP.
+sed 's/\\<//g; s/\\>//g' "$root/upstream-__REVISION__.sh" > "$root/upstream-__REVISION__.cygwin.sh"
+bash "$root/upstream-__REVISION__.cygwin.sh" __FLAGS__ -o "$root/reports/__REPORT__" | tee "$root/reports/__REPORT__.ansi"
 exit "${PIPESTATUS[0]}"
 '@
     return $template.Replace('__FAMILY__', $Flags[0]).Replace('__EXPECTED__', $ExpectedIP).

@@ -7,7 +7,7 @@
 开启 Clash **TUN 模式**，打开 **PowerShell**，粘贴：
 
 ```powershell
-irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/v2/ipquality.ps1 | iex
+irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/v3/ipquality.ps1 | iex
 ```
 
 适用于 64 位 Windows 10/11、Windows PowerShell 5.1 或 PowerShell 7。无需预装 Git、Bash、jq、WSL 或 Docker。
@@ -18,7 +18,7 @@ irm https://raw.githubusercontent.com/starsdaisuki/windows-ip-check/v2/ipquality
 
 ## 就是原报告，没有删检测项目
 
-启动器下载并校验原作者的 `ip.sh`，**不修改其代码和检测规则**。当前校验版本为 `v2026-09-04`，上游提交 `3c0eb8856c67ad351020d1edd1bfd4e2515d32fe`。
+启动器下载并校验原作者的 `ip.sh`，**不修改其检测规则**；执行前对副本做**一处**平台兼容补丁（原文件保持原样并持续校验）：当前校验版本为 `v2026-09-04`，上游提交 `3c0eb8856c67ad351020d1edd1bfd4e2515d32fe`。
 
 默认相当于在原生 Windows Bash 中执行：
 
@@ -55,7 +55,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ipquality.ps1 -IPv6
 - [xykt/IPQuality](https://github.com/xykt/IPQuality)：原检测脚本，AGPL-3.0，由启动器从原仓库下载。
 - [Cygwin](https://cygwin.com/)：官方原生 Windows 运行工具；setup 校验签名索引和软件包哈希。
 - 本仓启动器：MIT。没有将上游脚本或运行时二进制重新打包进本仓库。
-- 唯一系统命令适配是把上游用于查看 TCP 25 端口的 `ss` 调用交给 Windows `netstat`；IPQuality 的报告生成和评分规则不变。
+- 系统命令适配：把上游用于查看 TCP 25 端口的 `ss` 调用交给 Windows `netstat`。
+- **正则兼容补丁（v3 起）**：上游 `check_ip_valide` 的 IPv4 正则用了 GNU 词边界 `\<` `\>`，glibc 认、Cygwin 的 regcomp 不认，
+  结果每个 IP 都被判"无效"，流媒体一栏的「方式」**全部误标为 DNS**（v2 已实测）。启动器在执行前对副本去掉这两个边界符；
+  模式本身有 `^…$` 锚定，语义不变。IPQuality 的报告生成和评分规则不变。
 
 依赖和脚本下载需要网络；第三方检测服务会收到查询请求。默认不上传在线报告。
 
