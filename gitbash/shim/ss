@@ -1,0 +1,3 @@
+#!/bin/bash
+# ss shim: ip.sh only does `ss -tano | grep -q ":25\b"` (is local port 25 in use). netstat -ano gives the same columns.
+exec /c/Windows/System32/netstat.exe -ano

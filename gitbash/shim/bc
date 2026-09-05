@@ -1,0 +1,4 @@
+#!/bin/bash
+# bc shim (awk). ip.sh only ever does: echo "X * 60" | bc -l
+expr=$(cat)
+awk "BEGIN{printf \"%.20f\n\", $expr}"

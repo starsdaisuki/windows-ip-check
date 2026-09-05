@@ -1,0 +1,4 @@
+#!/bin/bash
+# date shim: MSYS has no zoneinfo, so TZ=Asia/Shanghai silently becomes GMT. Map it to a POSIX offset.
+[ "$TZ" = "Asia/Shanghai" ] && export TZ="CST-8"
+exec /usr/bin/date "$@"

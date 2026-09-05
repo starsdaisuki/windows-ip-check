@@ -1,0 +1,18 @@
+#!/bin/bash
+# nc shim via bash /dev/tcp. Shapes used by ip.sh:
+#   nc -s IP -w4 HOST PORT        nc -s IP -p25 -w9 HOST PORT
+host=""; port=""; w=5
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -s) shift ;;
+    -w) shift; w="$1" ;;
+    -w*) w="${1#-w}" ;;
+    -*) ;;
+    *) if [ -z "$host" ]; then host="$1"; else port="$1"; fi ;;
+  esac
+  shift
+done
+[ -n "$host" ] && [ -n "$port" ] || exit 1
+exec 3<>"/dev/tcp/$host/$port" 2>/dev/null || exit 1
+cat >&3
+timeout "$w" cat <&3

@@ -1,0 +1,27 @@
+#!/bin/bash
+# dig shim via Cloudflare DoH (JSON). Shapes used by ip.sh:
+#   dig NAME            -> full-ish output; ip.sh only greps the "ANSWER: N, AUTHORITY:" line
+#   dig TYPE NAME +short / dig +short TYPE NAME / dig +short NAME TYPE -> one .data per line
+short=0; type=""; name=""
+for a in "$@"; do
+  case "$a" in
+    +short) short=1 ;;
+    +*) ;;
+    A|AAAA|MX|TXT|NS|CNAME|PTR|SOA) type="$a" ;;
+    -*) ;;
+    *) name="$a" ;;
+  esac
+done
+type="${type:-A}"
+[ -n "$name" ] || exit 1
+json=$(curl -s --max-time 6 -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=${name}&type=${type}")
+[ -n "$json" ] || exit 1
+if [ "$short" -eq 1 ]; then
+  echo "$json" | jq -r '.Answer // [] | .[] | .data'
+else
+  n=$(echo "$json" | jq -r '.Answer // [] | length')
+  st=$(echo "$json" | jq -r 'if .Status==0 then "NOERROR" elif .Status==3 then "NXDOMAIN" else "SERVFAIL" end')
+  echo ";; ->>HEADER<<- opcode: QUERY, status: $st, id: 0"
+  echo ";; flags: qr rd ra; QUERY: 1, ANSWER: $n, AUTHORITY: 0, ADDITIONAL: 0"
+  echo "$json" | jq -r '.Answer // [] | .[] | "\(.name)\t\(.TTL)\tIN\t\(.type)\t\(.data)"'
+fi
